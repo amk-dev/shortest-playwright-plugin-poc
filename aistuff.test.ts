@@ -1,15 +1,32 @@
+import { expect } from "playwright/test";
 import { test } from "./playwright-plugin";
 
-test("google tests", async ({ shortest }) => {
-  shortest.config({ baseURL: "https://google.com" });
+test.only("google tests", async ({ shortest, page }) => {
+  test.slow();
+
+  const res = await fetch("https://httpbin.org/post", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "akash",
+      expect: ["student", "developer"],
+    }),
+  });
+
+  const resJson = await res.json();
+
+  await shortest.ai("make sure akash is not a student", {
+    resJson,
+  });
 
   await shortest.ai(
-    "make sure google.com has a text box and the user is not signed in"
+    "go to google.com and make sure it has a text box and the user is not signed in"
   );
 });
 
-test.only("etherscan tests", async ({ shortest }) => {
-  shortest.config({ baseURL: "https://etherscan.io/" });
+test("etherscan tests", async ({ shortest }) => {
+  test.slow();
 
-  await shortest.ai(`make sure the price of ethereum is above $2500`);
+  await shortest.ai(
+    `go to etherscan and make sure the price of ethereum is above $10000`
+  );
 });

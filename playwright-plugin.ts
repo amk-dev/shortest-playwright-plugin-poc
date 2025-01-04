@@ -1,8 +1,10 @@
-import { expect, Page, test as base } from "@playwright/test";
-import { Anthropic } from "@anthropic-ai/sdk";
+import { Page, test as base, TestInfo } from "@playwright/test";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
-import { BetaContentBlockParam } from "@anthropic-ai/sdk/resources/beta/index.mjs";
+import { CoreMessage, generateText } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { computerUse, screenshot } from "./tools/computerUse";
+import { finishTest } from "./tools/test";
+import { navigateTool } from "./tools/navigate";
 
 const TestResults = z.object({
   success: z.boolean(),
@@ -11,20 +13,32 @@ const TestResults = z.object({
 });
 
 export class Shortest {
-  constructor(public readonly page: Page) {}
+  constructor(
+    public readonly page: Page,
+    private readonly testInfo?: TestInfo
+  ) {}
 
   _config: {
     baseURL: string;
   } | null = null;
 
-  async ai(instruction: string) {
-    if (!this._config) {
-      throw new Error("No baseURL configured");
+  async ai(instruction: string, additionalInfo: { [key: string]: any } = {}) {
+    this.testInfo.this.page.setViewportSize({
+      width: 1920,
+      height: 1080,
+    });
+
+    const res = await createComputerUseSession(
+      instruction,
+      additionalInfo,
+      this.page
+    );
+
+    if (!res?.success) {
+      throw new Error(res?.message);
     }
 
-    await this.page.goto(this._config.baseURL);
-
-    await createComputerUseSession(instruction, this.page);
+    return res;
   }
 
   async config(config: { baseURL: string }) {
@@ -33,136 +47,91 @@ export class Shortest {
 }
 
 export const test = base.extend<{ shortest: Shortest }>({
-  shortest: async ({ page }, use) => {
-    await use(new Shortest(page));
+  shortest: async ({ page }, use, testInfo) => {
+    await use(new Shortest(page, testInfo));
   },
 });
 
 // -------------------------------------------- Computer use stuff --------------------------------------------
 
-const anthropic = new Anthropic();
+// const anthropic = new Anthropic();
 
-const prompt = (test_description: string) => {
-  return `You are an AI-powered end-to-end tester. Your goal is to run a test that has been defined using natural language. You will use a computer use tool to perform actions on the system being tested.
-  the chrome browser will be already open and you can use it as your browser.
+const prompt = (
+  test_description: string,
+  additionalInfo: {
+    [key: string]: any;
+  }
+) => {
+  return `You are an ai powered end to end tester. you need to act according to the user's instructions. you dont have to use computer use mandatory. but only when needed. we have tests that does not require computer use. keep that in mind.
 
 Here is the test description:
 <test_description>
 ${test_description}
 </test_description>
 
-To interact with the system, you will use the following computer use tool:`;
+Here is the additional information passed by the user:
+<additional_info>
+${JSON.stringify(additionalInfo, null, 2)}
+</additional_info>
+`;
 };
 
-const runComputerUse = async (
-  existingMessages: Anthropic.Beta.Messages.BetaMessageParam[]
-) => {
-  const message = await anthropic.beta.messages.create({
-    model: "claude-3-5-sonnet-20241022",
-    max_tokens: 1024,
-    tools: [
-      {
-        type: "custom",
-        name: "screenshot",
-        input_schema: {
-          type: "object",
-        },
-        description: "Take a screenshot of the current screen",
-      },
-      {
-        type: "computer_20241022",
-        name: "computer",
-        display_width_px: 1024,
-        display_height_px: 768,
-        display_number: 1,
-      },
-      {
-        type: "custom",
-        name: "finishTestRun",
-        input_schema: {
-          type: "object",
-          properties: {
-            results: zodToJsonSchema(TestResults),
-          },
-        },
-      },
-    ],
+const runComputerUse = async (existingMessages: CoreMessage[], page: Page) => {
+  let testRes: {
+    success: boolean;
+    message: string;
+  } | null = null;
+
+  const res = await generateText({
+    model: anthropic("claude-3-5-sonnet-latest"),
+    tools: {
+      computer: computerUse(page),
+      finishTest: finishTest((res) => {
+        testRes = {
+          ...res,
+        };
+      }),
+      navigate: navigateTool(page),
+    },
     messages: existingMessages,
-    betas: ["computer-use-2024-10-22"],
+    maxSteps: 10, // a big number
+    experimental_telemetry: {
+      isEnabled: true,
+      recordInputs: true,
+      recordOutputs: true,
+    },
   });
 
-  return message;
+  return testRes as { success: boolean; message: string } | null;
 };
 
-const createComputerUseSession = async (instruction: string, page: Page) => {
-  let runFinished = false;
+const createComputerUseSession = async (
+  instruction: string,
+  additionalInfo: { [key: string]: any } = {},
+  page: Page
+) => {
+  const initialScreenshot = await screenshot(page);
 
-  const finishTestRun = async (results: z.infer<typeof TestResults>) => {
-    if (results.success) {
-      runFinished = true;
+  if (initialScreenshot.isErr()) {
+    throw new Error(initialScreenshot.error);
+  }
 
-      return true;
-    }
-
-    runFinished = true;
-
-    throw new Error(results.message);
-  };
-
-  const screenshot = async () => {
-    const screenshot = await page.screenshot();
-    const base64 = screenshot.toString("base64");
-
-    return base64 as string;
-  };
-
-  const existingMessages: Anthropic.Beta.Messages.BetaMessageParam[] = [
+  const existingMessages: CoreMessage[] = [
     {
       role: "user",
       content: [
         {
           type: "text",
-          text: prompt(instruction),
+          text: prompt(instruction, additionalInfo),
         },
         {
           type: "image",
-          source: {
-            type: "base64",
-            data: await screenshot(),
-            media_type: "image/png",
-          },
+          image: initialScreenshot.value,
+          mimeType: "image/jpeg",
         },
       ],
     },
   ];
 
-  while (true) {
-    const res = await runComputerUse(existingMessages);
-
-    const message = res.content;
-
-    message.forEach((m) => {
-      if (m.type === "tool_use" && m.name === "finishTestRun") {
-        const args = m.input;
-
-        const parsedArgs = TestResults.safeParse(args.results);
-
-        if (!parsedArgs.success) {
-          throw new Error("TEST_FAILED_TO_RUN");
-        }
-
-        finishTestRun(parsedArgs.data);
-
-        return;
-      }
-    });
-
-    if (runFinished) {
-      break;
-    }
-
-    throw new Error(
-      "DID NOT COMPLETE IN ONE STEP, THIS IS A TOY IMPLEMENTATION EXPECTED TO FINISH IN ONE STEP"
-    );
-  }
+  return await runComputerUse(existingMessages, page);
 };

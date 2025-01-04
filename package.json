@@ -1,9 +1,12 @@
 {
-	"dependencies": {
-		"@anthropic-ai/sdk": "0.33.1",
-		"@playwright/test": "1.49.1",
-		"playwright": "1.49.1",
-		"zod": "3.24.1",
-		"zod-to-json-schema": "3.24.1"
-	}
+  "dependencies": {
+    "@ai-sdk/anthropic": "1.0.6",
+    "@anthropic-ai/sdk": "0.33.1",
+    "@playwright/test": "1.49.1",
+    "ai": "4.0.26",
+    "neverthrow": "8.1.1",
+    "playwright": "1.49.1",
+    "zod": "3.24.1",
+    "zod-to-json-schema": "3.24.1"
+  }
 }
